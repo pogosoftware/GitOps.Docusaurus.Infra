@@ -1,0 +1,5 @@
+replicaCount: 1
+name: docusaurus-app
+image:
+  repository: pogosoftware/docusaurus-app
+  tag: sha-73f56dd 
