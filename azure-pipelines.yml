@@ -1,0 +1,95 @@
+trigger: none
+
+pr:
+  branches:
+    include:
+      - develop
+  paths:
+    include:
+      - helm/portal/**
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  helmChartPath: 'helm/portal'
+  chartName: 'docusaurus-app'
+  acrName: '$(ACR_NAME)' # Set this variable in your pipeline
+  acrLoginServer: '$(ACR_LOGIN_SERVER)' # Set this variable in your pipeline
+
+stages:
+- stage: ValidateAndPackage
+  displayName: 'Validate and Package Helm Chart'
+  jobs:
+  - job: HelmValidation
+    displayName: 'Validate Helm Chart'
+    steps:
+    - displayName: 'Install Helm'
+      task: HelmInstaller@1
+      inputs:
+        helmVersionToInstall: 'latest'
+
+    - displayName: 'Lint Helm Chart'
+      script: |
+        helm lint $(helmChartPath)
+      
+    - displayName: 'Validate Helm Templates'
+      script: |
+        helm template $(chartName) $(helmChartPath) --debug --dry-run
+  
+    - displayName: 'Package Helm Chart'
+      script: |
+        helm package $(helmChartPath) --destination $(Build.ArtifactStagingDirectory)
+
+    - displayName: 'Publish Helm Chart Artifact'
+      task: PublishPipelineArtifact@1
+      inputs:
+        targetPath: '$(Build.ArtifactStagingDirectory)'
+        artifact: 'helm-chart'
+
+- stage: PushToACR
+  displayName: 'Push to Azure Container Registry'
+  dependsOn: ValidateAndPackage
+  condition: succeeded()
+  jobs:
+  - job: PushChart
+    displayName: 'Push Chart to ACR'
+    steps:
+    - displayName: 'Download Helm Chart Artifact'
+      task: DownloadPipelineArtifact@2
+      inputs:
+        buildType: 'current'
+        artifactName: 'helm-chart'
+        targetPath: '$(System.ArtifactsDirectory)'
+
+    - displayName: 'Install Helm'
+      task: HelmInstaller@1
+      inputs:
+        helmVersionToInstall: 'latest'
+
+    - displayName: 'Login to ACR and Push Helm Chart'
+      task: AzureCLI@2
+      inputs:
+        azureSubscription: '$(AZURE_SERVICE_CONNECTION)' # Set this variable in your pipeline
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Login to ACR
+          az acr login --name $(acrName)
+          
+          # Enable OCI support in Helm
+          export HELM_EXPERIMENTAL_OCI=1
+          
+          # Find the packaged chart
+          CHART_FILE=$(find $(System.ArtifactsDirectory) -name "*.tgz" | head -1)
+          echo "Found chart file: $CHART_FILE"
+          
+          
+          # Push to ACR
+          helm push "$CHART_FILE" oci://$(acrLoginServer)/helm
+
+    - script: |
+        echo "Helm chart validation and push completed successfully!"
+        echo "Chart: $(chartName)"
+        echo "Registry: $(acrLoginServer)/helm"
+      displayName: 'Summary' 
